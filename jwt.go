@@ -17,10 +17,12 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp/caddyauth"
-	"github.com/lestrrat-go/jwx/v2/jwa"
-	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jws"
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/lestrrat-go/httprc/v3"
+	"github.com/lestrrat-go/httprc/v3/errsink"
+	"github.com/lestrrat-go/jwx/v3/jwa"
+	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v3/jws"
+	"github.com/lestrrat-go/jwx/v3/jwt"
 	"go.uber.org/zap"
 )
 
@@ -232,17 +234,28 @@ func (ja *JWTAuth) getOrCreateJWKCache(resolvedURL string) (*jwkCacheEntry, erro
 	}
 
 	// Create a new cache for this URL
-	cache := jwk.NewCache(context.Background(), jwk.WithErrSink(ja))
-	err := cache.Register(resolvedURL)
+	client := httprc.NewClient(httprc.WithErrorSink(errsink.NewFunc(func(_ context.Context, err error) {
+		ja.Error(err)
+	})))
+	cache, err := jwk.NewCache(context.Background(), client)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create JWK cache: %w", err)
+	}
+	err = cache.Register(context.Background(), resolvedURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to register JWK URL: %w", err)
+	}
+
+	cachedSet, err := cache.CachedSet(resolvedURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cached JWK set: %w", err)
 	}
 
 	// Create cache entry before attempting refresh
 	entry = &jwkCacheEntry{
 		URL:       resolvedURL,
 		Cache:     cache,
-		CachedSet: jwk.NewCachedSet(cache, resolvedURL),
+		CachedSet: cachedSet,
 	}
 
 	// Try to refresh the cache immediately
@@ -298,9 +311,8 @@ func (ja *JWTAuth) validateSignatureKeys() error {
 			}
 
 			if ja.SignAlgorithm != "" {
-				var alg jwa.SignatureAlgorithm
-				if err := alg.Accept(ja.SignAlgorithm); err != nil {
-					return fmt.Errorf("%w: %v", ErrInvalidSignAlgorithm, err)
+				if _, ok := jwa.LookupSignatureAlgorithm(ja.SignAlgorithm); !ok {
+					return fmt.Errorf("%w: %s", ErrInvalidSignAlgorithm, ja.SignAlgorithm)
 				}
 			}
 		}
@@ -329,7 +341,7 @@ func (ja *JWTAuth) keyProvider(request *http.Request) jws.KeyProviderFunc {
 			}
 
 			// Use the key set associated with this URL
-			kid := sig.ProtectedHeaders().KeyID()
+			kid, _ := sig.ProtectedHeaders().KeyID()
 			key, found := cacheEntry.CachedSet.LookupKeyID(kid)
 			if !found {
 				// Trigger an asynchronous refresh if the key is not found
@@ -340,29 +352,36 @@ func (ja *JWTAuth) keyProvider(request *http.Request) jws.KeyProviderFunc {
 				}
 				return fmt.Errorf("key specified by kid %q not found in JWKs from %s", kid, resolvedURL)
 			}
-			sink.Key(ja.determineSigningAlgorithm(key.Algorithm(), sig.ProtectedHeaders().Algorithm()), key)
-		} else if ja.SignAlgorithm == string(jwa.EdDSA) {
+			keyAlg, _ := key.Algorithm()
+			headerAlg, _ := sig.ProtectedHeaders().Algorithm()
+			sink.Key(ja.determineSigningAlgorithm(safeString(keyAlg), safeString(headerAlg)), key)
+		} else if ja.SignAlgorithm == jwa.EdDSA().String() {
 			if signKey, ok := ja.parsedSignKey.([]byte); !ok {
 				return fmt.Errorf("EdDSA key must be base64 encoded bytes")
 			} else if len(signKey) != ed25519.PublicKeySize {
 				return fmt.Errorf("key is not a proper ed25519 length")
 			} else {
-				sink.Key(jwa.EdDSA, ed25519.PublicKey(signKey))
+				sink.Key(jwa.EdDSA(), ed25519.PublicKey(signKey))
 			}
 		} else {
-			sink.Key(ja.determineSigningAlgorithm(sig.ProtectedHeaders().Algorithm()), ja.parsedSignKey)
+			headerAlg, _ := sig.ProtectedHeaders().Algorithm()
+			sink.Key(ja.determineSigningAlgorithm(safeString(headerAlg)), ja.parsedSignKey)
 		}
 		return nil
 	}
 }
 
-func (ja *JWTAuth) determineSigningAlgorithm(alg ...jwa.KeyAlgorithm) jwa.SignatureAlgorithm {
-	for _, a := range alg {
-		if a.String() != "" {
-			return jwa.SignatureAlgorithm(a.String())
+func (ja *JWTAuth) determineSigningAlgorithm(algoNames ...string) jwa.SignatureAlgorithm {
+	algoNames = append(algoNames, ja.SignAlgorithm) // fallback to ja.SignAlgorithm
+	for _, name := range algoNames {
+		if name == "" {
+			continue
+		}
+		if alg, ok := jwa.LookupSignatureAlgorithm(name); ok {
+			return alg
 		}
 	}
-	return jwa.SignatureAlgorithm(ja.SignAlgorithm) // can be ""
+	return jwa.EmptySignatureAlgorithm()
 }
 
 // Authenticate validates the JWT in the request and returns the user, if valid.
@@ -499,13 +518,17 @@ func getTokensFromCookies(r *http.Request, names []string) []string {
 
 func getUserID(token Token, names []string) (string, string) {
 	for _, name := range names {
-		if userClaim, ok := token.Get(name); ok {
-			switch val := userClaim.(type) {
-			case string:
-				return name, val
-			case float64:
-				return name, strconv.FormatFloat(val, 'f', -1, 64)
-			}
+		userClaim, ok := getTokenClaim(token, name)
+		if !ok {
+			continue
+		}
+		switch val := userClaim.(type) {
+		case string:
+			return name, val
+		case float64:
+			return name, strconv.FormatFloat(val, 'f', -1, 64)
+		case json.Number:
+			return name, val.String()
 		}
 	}
 	return "", ""
@@ -531,10 +554,10 @@ func getUserMetadata(token Token, placeholdersMap map[string]string) map[string]
 		return nil
 	}
 
-	claims, _ := token.AsMap(context.Background()) // error ignored
+	claims := tokenAsMap(token)
 	metadata := make(map[string]string)
 	for claim, placeholder := range placeholdersMap {
-		claimValue, ok := token.Get(claim)
+		claimValue, ok := getTokenClaim(token, claim)
 
 		// Query nested claims.
 		if !ok && strings.Contains(claim, ".") {
@@ -548,6 +571,26 @@ func getUserMetadata(token Token, placeholdersMap map[string]string) map[string]
 	}
 
 	return metadata
+}
+
+func getTokenClaim(token Token, name string) (interface{}, bool) {
+	var value interface{}
+	if err := token.Get(name, &value); err != nil {
+		return nil, false
+	}
+	return value, true
+}
+
+func tokenAsMap(token Token) map[string]interface{} {
+	claims := make(map[string]interface{})
+	for _, key := range token.Keys() {
+		value, ok := getTokenClaim(token, key)
+		if !ok {
+			continue
+		}
+		claims[key] = value
+	}
+	return claims
 }
 
 func stringify(val interface{}) string {
@@ -619,6 +662,13 @@ func parsePEMFormattedPublicKey(pubKey string) ([]byte, error) {
 	}
 
 	return nil, ErrInvalidPublicKey
+}
+
+func safeString(s fmt.Stringer) string {
+	if s == nil {
+		return ""
+	}
+	return s.String()
 }
 
 // Interface guards
