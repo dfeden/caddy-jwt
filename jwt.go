@@ -352,9 +352,9 @@ func (ja *JWTAuth) keyProvider(request *http.Request) jws.KeyProviderFunc {
 				}
 				return fmt.Errorf("key specified by kid %q not found in JWKs from %s", kid, resolvedURL)
 			}
-			keyAlg, keyAlgOk := key.Algorithm()
-			headerAlg, headerAlgOk := sig.ProtectedHeaders().Algorithm()
-			sink.Key(ja.determineSigningAlgorithm(keyAlg, keyAlgOk, headerAlg, headerAlgOk), key)
+			keyAlg, _ := key.Algorithm()
+			headerAlg, _ := sig.ProtectedHeaders().Algorithm()
+			sink.Key(ja.determineSigningAlgorithm(safeString(keyAlg), safeString(headerAlg)), key)
 		} else if ja.SignAlgorithm == jwa.EdDSA().String() {
 			if signKey, ok := ja.parsedSignKey.([]byte); !ok {
 				return fmt.Errorf("EdDSA key must be base64 encoded bytes")
@@ -364,27 +364,22 @@ func (ja *JWTAuth) keyProvider(request *http.Request) jws.KeyProviderFunc {
 				sink.Key(jwa.EdDSA(), ed25519.PublicKey(signKey))
 			}
 		} else {
-			headerAlg, headerAlgOk := sig.ProtectedHeaders().Algorithm()
-			sink.Key(ja.determineSigningAlgorithm(nil, false, headerAlg, headerAlgOk), ja.parsedSignKey)
+			headerAlg, _ := sig.ProtectedHeaders().Algorithm()
+			sink.Key(ja.determineSigningAlgorithm(safeString(headerAlg)), ja.parsedSignKey)
 		}
 		return nil
 	}
 }
 
-func (ja *JWTAuth) determineSigningAlgorithm(keyAlg jwa.KeyAlgorithm, keyAlgOk bool, headerAlg jwa.SignatureAlgorithm, headerAlgOk bool) jwa.SignatureAlgorithm {
-	if keyAlgOk {
-		if alg, ok := jwa.LookupSignatureAlgorithm(keyAlg.String()); ok {
+func (ja *JWTAuth) determineSigningAlgorithm(algoNames ...string) jwa.SignatureAlgorithm {
+	algoNames = append(algoNames, ja.SignAlgorithm) // fallback to ja.SignAlgorithm
+	for _, name := range algoNames {
+		if name == "" {
+			continue
+		}
+		if alg, ok := jwa.LookupSignatureAlgorithm(name); ok {
 			return alg
 		}
-	}
-	if headerAlgOk && headerAlg.String() != "" {
-		return headerAlg
-	}
-	if ja.SignAlgorithm == "" {
-		return jwa.EmptySignatureAlgorithm()
-	}
-	if alg, ok := jwa.LookupSignatureAlgorithm(ja.SignAlgorithm); ok {
-		return alg
 	}
 	return jwa.EmptySignatureAlgorithm()
 }
@@ -667,6 +662,13 @@ func parsePEMFormattedPublicKey(pubKey string) ([]byte, error) {
 	}
 
 	return nil, ErrInvalidPublicKey
+}
+
+func safeString(s fmt.Stringer) string {
+	if s == nil {
+		return ""
+	}
+	return s.String()
 }
 
 // Interface guards

@@ -225,6 +225,16 @@ func TestValidate_InvalidMetaClaims(t *testing.T) {
 	assert.Contains(t, ja.Validate().Error(), "invalid meta claim")
 }
 
+func TestDetermineSigningAlgorithmFallback(t *testing.T) {
+	ja := &JWTAuth{SignAlgorithm: jwa.HS256().String()}
+
+	alg := ja.determineSigningAlgorithm()
+	assert.Equal(t, jwa.HS256(), alg)
+
+	alg = ja.determineSigningAlgorithm(jwa.EdDSA().String())
+	assert.Equal(t, jwa.EdDSA(), alg)
+}
+
 func TestAuthenticate_FromAuthorizationHeader(t *testing.T) {
 	claims := MapClaims{"sub": "ggicci"}
 	ja := &JWTAuth{SignKey: TestSignKey, logger: testLogger}
