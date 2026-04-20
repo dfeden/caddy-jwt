@@ -81,6 +81,14 @@ type JWTAuth struct {
 	// 3. The value set here.
 	SignAlgorithm string `json:"sign_alg"`
 
+	// ClockSkew defines the clock skew for the "iat" (issued at),
+	// "exp" (expiration time) and "nbf" (not before) claim verification in seconds.
+	//
+	// The default value is 0, which means the claims will be verified strictly.
+	// Use with caution, as allowing a large clock skew can make the verification less secure.
+	// Time sync of all parties involved is recommended.
+	ClockSkew int `json:"clock_skew"`
+
 	// SkipVerification disables the verification of the JWT token signature.
 	//
 	// Use this option with caution, as it bypasses JWT signature verification.
@@ -406,6 +414,9 @@ func (ja *JWTAuth) Authenticate(rw http.ResponseWriter, r *http.Request) (User, 
 
 		jwtOptions := []jwt.ParseOption{
 			jwt.WithVerify(!ja.SkipVerification),
+		}
+		if ja.ClockSkew > 0 {
+			jwtOptions = append(jwtOptions, jwt.WithAcceptableSkew(time.Duration(ja.ClockSkew)*time.Second))
 		}
 		if !ja.SkipVerification {
 			jwtOptions = append(jwtOptions, jwt.WithKeyProvider(ja.keyProvider(r)))

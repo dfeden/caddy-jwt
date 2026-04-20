@@ -2,6 +2,7 @@ package caddyjwt
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/caddyserver/caddy/v2"
@@ -39,6 +40,19 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 			case "jwk_url":
 				if !h.AllArgs(&ja.JWKURL) {
 					return nil, h.Errf("invalid jwk_url: %q", ja.JWKURL)
+				}
+			case "clock_skew":
+				ja.ClockSkew = 0
+				var clockSkewStr string
+				if !h.AllArgs(&clockSkewStr) {
+					return nil, h.Errf("invalid clock_skew: %q", ja.ClockSkew)
+				} else {
+					clockSkewNumber, err := strconv.Atoi(clockSkewStr)
+					if err == nil && clockSkewNumber >= 0 {
+						ja.ClockSkew = clockSkewNumber
+					} else {
+						return nil, h.Errf("invalid clock_skew: %q, must be a non-negative integer", clockSkewStr)
+					}
 				}
 			case "skip_verification":
 				ja.SkipVerification = true
