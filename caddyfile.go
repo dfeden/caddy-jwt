@@ -42,7 +42,6 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 					return nil, h.Errf("invalid jwk_url: %q", ja.JWKURL)
 				}
 			case "clock_skew":
-				ja.ClockSkew = 0
 				var clockSkewStr string
 				if !h.AllArgs(&clockSkewStr) {
 					return nil, h.Errf("invalid clock_skew: %q", ja.ClockSkew)

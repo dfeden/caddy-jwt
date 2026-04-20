@@ -7,12 +7,13 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/caddyserver/caddy/v2"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/caddyserver/caddy/v2"
 
 	"github.com/lestrrat-go/jwx/v3/jwa"
 	"github.com/lestrrat-go/jwx/v3/jwk"
@@ -213,6 +214,66 @@ func TestValidate_SkipVerification(t *testing.T) {
 		SkipVerification: true,
 	}
 	assert.NoError(t, ja.Validate())
+}
+
+func TestAuthenticate_ClockSkew_Exp(t *testing.T) {
+	claims := MapClaims{"sub": "dfeden",
+		"exp": time.Now().Add(-5 * time.Second).Unix(), // expired 5 Seconds ago
+	}
+	ja := &JWTAuth{
+		SignKey:   TestSignKey,
+		logger:    testLogger,
+		ClockSkew: 10, // allow 10 seconds of clock skew
+	}
+	assert.Nil(t, ja.Validate())
+
+	rw := httptest.NewRecorder()
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Header.Add("Authorization", "Bearer "+issueTokenString(claims))
+	gotUser, authenticated, err := ja.Authenticate(rw, r)
+	assert.Nil(t, err)
+	assert.True(t, authenticated)
+	assert.Equal(t, "dfeden", gotUser.ID)
+}
+
+func TestAuthenticate_ClockSkew_Iat(t *testing.T) {
+	claims := MapClaims{"sub": "dfeden",
+		"iat": time.Now().Add(5 * time.Second).Unix(), // issued 5 Seconds in the future
+	}
+	ja := &JWTAuth{
+		SignKey:   TestSignKey,
+		logger:    testLogger,
+		ClockSkew: 10, // allow 10 seconds of clock skew
+	}
+	assert.Nil(t, ja.Validate())
+
+	rw := httptest.NewRecorder()
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Header.Add("Authorization", "Bearer "+issueTokenString(claims))
+	gotUser, authenticated, err := ja.Authenticate(rw, r)
+	assert.Nil(t, err)
+	assert.True(t, authenticated)
+	assert.Equal(t, "dfeden", gotUser.ID)
+}
+
+func TestAuthenticate_ClockSkew_Nbf(t *testing.T) {
+	claims := MapClaims{"sub": "dfeden",
+		"nbf": time.Now().Add(5 * time.Second).Unix(), // issued 5 Seconds in the future
+	}
+	ja := &JWTAuth{
+		SignKey:   TestSignKey,
+		logger:    testLogger,
+		ClockSkew: 10, // allow 10 seconds of clock skew
+	}
+	assert.Nil(t, ja.Validate())
+
+	rw := httptest.NewRecorder()
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Header.Add("Authorization", "Bearer "+issueTokenString(claims))
+	gotUser, authenticated, err := ja.Authenticate(rw, r)
+	assert.Nil(t, err)
+	assert.True(t, authenticated)
+	assert.Equal(t, "dfeden", gotUser.ID)
 }
 
 func TestValidate_InvalidMetaClaims(t *testing.T) {
