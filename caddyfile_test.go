@@ -209,3 +209,66 @@ func TestParsingCaddyfileWithSkipVerification(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, caddyconfig.JSON(expectedJA, nil), jsonConfig)
 }
+
+func TestParsingCaddyFileClockSkew(t *testing.T) {
+	helper := httpcaddyfile.Helper{
+		Dispenser: caddyfile.NewTestDispenser(`
+	jwtauth {
+		jwk_url https://example.com/.well-known/jwks.json
+		clock_skew 60
+		user_claims preferred_username
+	}
+	`),
+	}
+	expectedJA := &JWTAuth{
+		JWKURL:     "https://example.com/.well-known/jwks.json",
+		ClockSkew:  60,
+		UserClaims: []string{"preferred_username"},
+	}
+
+	h, err := parseCaddyfile(helper)
+	assert.Nil(t, err)
+	auth, ok := h.(caddyauth.Authentication)
+	assert.True(t, ok)
+	jsonConfig, ok := auth.ProvidersRaw["jwt"]
+	assert.True(t, ok)
+	assert.Equal(t, caddyconfig.JSON(expectedJA, nil), jsonConfig)
+}
+
+func TestParsingCaddyFileErrorClockSkew(t *testing.T) {
+	helper := httpcaddyfile.Helper{
+		Dispenser: caddyfile.NewTestDispenser(`
+	jwtauth {
+		clock_skew -60
+	}
+	`),
+	}
+
+	_, err := parseCaddyfile(helper)
+	assert.NotNil(t, err)
+	assert.Contains(t, err.Error(), "clock_skew")
+
+	helper = httpcaddyfile.Helper{
+		Dispenser: caddyfile.NewTestDispenser(`
+	jwtauth {
+		clock_skew
+	}
+	`),
+	}
+
+	_, err = parseCaddyfile(helper)
+	assert.NotNil(t, err)
+	assert.Contains(t, err.Error(), "clock_skew")
+
+	helper = httpcaddyfile.Helper{
+		Dispenser: caddyfile.NewTestDispenser(`
+	jwtauth {
+		clock_skew abc
+	}
+	`),
+	}
+
+	_, err = parseCaddyfile(helper)
+	assert.NotNil(t, err)
+	assert.Contains(t, err.Error(), "clock_skew")
+}
